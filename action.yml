@@ -17,6 +17,9 @@
 
 name: 'Latchkey Docker Cache Build'
 description: 'Build Docker images with automatic ECR layer caching on Latchkey runners'
+branding:
+  icon: 'layers'
+  color: 'blue'
 
 inputs:
   context:
