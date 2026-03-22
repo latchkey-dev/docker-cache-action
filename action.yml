@@ -1,0 +1,210 @@
+# Latchkey Docker Cache Action
+#
+# Wraps docker buildx build with automatic ECR-based layer caching.
+# When running on a Latchkey managed runner, ECR_CACHE_REPO is injected
+# into the runner environment. This action auto-configures --cache-from
+# and --cache-to so users don't need to wire ECR references manually.
+#
+# Usage:
+#   - uses: latchkey-dev/docker-cache-action@v1
+#     with:
+#       context: .
+#       tags: myapp:latest
+#       push: true
+#
+# If ECR_CACHE_REPO is not set (e.g. running on GitHub-hosted runners),
+# the build proceeds normally without cache flags.
+
+name: 'Latchkey Docker Cache Build'
+description: 'Build Docker images with automatic ECR layer caching on Latchkey runners'
+
+inputs:
+  context:
+    description: 'Build context path'
+    required: false
+    default: '.'
+  dockerfile:
+    description: 'Path to Dockerfile (relative to context)'
+    required: false
+    default: 'Dockerfile'
+  tags:
+    description: 'Image tags (newline or comma separated)'
+    required: true
+  push:
+    description: 'Push image to registry after build'
+    required: false
+    default: 'false'
+  build-args:
+    description: 'Build arguments (newline separated, KEY=VALUE)'
+    required: false
+    default: ''
+  target:
+    description: 'Build target stage'
+    required: false
+    default: ''
+  platforms:
+    description: 'Target platforms (e.g. linux/amd64,linux/arm64)'
+    required: false
+    default: ''
+  cache-mode:
+    description: 'BuildKit cache mode (min or max)'
+    required: false
+    default: 'max'
+  cache-tag:
+    description: 'ECR image tag used for cache layers'
+    required: false
+    default: 'cache'
+  extra-cache-from:
+    description: 'Additional --cache-from arguments (newline separated)'
+    required: false
+    default: ''
+  extra-cache-to:
+    description: 'Additional --cache-to arguments (newline separated)'
+    required: false
+    default: ''
+
+outputs:
+  cache-configured:
+    description: 'Whether ECR cache flags were configured (true/false)'
+    value: ${{ steps.build.outputs.cache-configured }}
+  image-digest:
+    description: 'Image digest from the build'
+    value: ${{ steps.build.outputs.digest }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build with ECR cache
+      id: build
+      shell: bash
+      env:
+        INPUT_CONTEXT: ${{ inputs.context }}
+        INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
+        INPUT_TAGS: ${{ inputs.tags }}
+        INPUT_PUSH: ${{ inputs.push }}
+        INPUT_BUILD_ARGS: ${{ inputs.build-args }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_CACHE_MODE: ${{ inputs.cache-mode }}
+        INPUT_CACHE_TAG: ${{ inputs.cache-tag }}
+        INPUT_EXTRA_CACHE_FROM: ${{ inputs.extra-cache-from }}
+        INPUT_EXTRA_CACHE_TO: ${{ inputs.extra-cache-to }}
+      run: |
+        set -euo pipefail
+
+        # Shell-native whitespace trim (avoids xargs mangling special chars)
+        trim() {
+          local s="$1"
+          s="${s#"${s%%[![:space:]]*}"}"
+          s="${s%"${s##*[![:space:]]}"}"
+          echo "$s"
+        }
+
+        # Build the docker buildx command
+        CMD=(docker buildx build)
+
+        # Context and Dockerfile
+        CMD+=(--file "${INPUT_CONTEXT}/${INPUT_DOCKERFILE}")
+
+        # Tags (split on newlines and commas)
+        while IFS= read -r tag; do
+          tag=$(trim "$tag")
+          [ -n "$tag" ] && CMD+=(--tag "$tag")
+        done <<< "$(echo "$INPUT_TAGS" | tr ',' '\n')"
+
+        # Build args (tracked separately to avoid leaking values in logs)
+        BUILD_ARG_COUNT=0
+        if [ -n "$INPUT_BUILD_ARGS" ]; then
+          while IFS= read -r arg; do
+            arg=$(trim "$arg")
+            if [ -n "$arg" ]; then
+              CMD+=(--build-arg "$arg")
+              BUILD_ARG_COUNT=$((BUILD_ARG_COUNT + 1))
+            fi
+          done <<< "$INPUT_BUILD_ARGS"
+        fi
+
+        # Target stage
+        [ -n "$INPUT_TARGET" ] && CMD+=(--target "$INPUT_TARGET")
+
+        # Platforms
+        [ -n "$INPUT_PLATFORMS" ] && CMD+=(--platform "$INPUT_PLATFORMS")
+
+        # Push or load
+        if [ "$INPUT_PUSH" = "true" ]; then
+          CMD+=(--push)
+        elif [ -z "$INPUT_PLATFORMS" ] || [[ "$INPUT_PLATFORMS" != *","* ]]; then
+          # Load into local Docker daemon for single-platform non-push builds
+          CMD+=(--load)
+        fi
+
+        # ECR cache configuration
+        CACHE_CONFIGURED=false
+        if [ -n "${ECR_CACHE_REPO:-}" ]; then
+          echo "ECR cache repo detected: ${ECR_CACHE_REPO}"
+          CACHE_REF="${ECR_CACHE_REPO}:${INPUT_CACHE_TAG}"
+
+          CMD+=(--cache-from "type=registry,ref=${CACHE_REF}")
+          CMD+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE}")
+          CACHE_CONFIGURED=true
+        else
+          echo "ECR_CACHE_REPO not set — building without ECR layer cache"
+        fi
+
+        # Extra cache-from entries
+        if [ -n "$INPUT_EXTRA_CACHE_FROM" ]; then
+          while IFS= read -r entry; do
+            entry=$(trim "$entry")
+            [ -n "$entry" ] && CMD+=(--cache-from "$entry")
+          done <<< "$INPUT_EXTRA_CACHE_FROM"
+        fi
+
+        # Extra cache-to entries
+        if [ -n "$INPUT_EXTRA_CACHE_TO" ]; then
+          while IFS= read -r entry; do
+            entry=$(trim "$entry")
+            [ -n "$entry" ] && CMD+=(--cache-to "$entry")
+          done <<< "$INPUT_EXTRA_CACHE_TO"
+        fi
+
+        # Metadata output (unique temp file to avoid collisions)
+        METADATA_FILE=$(mktemp /tmp/docker-build-metadata-XXXXXX.json)
+        CMD+=(--metadata-file "$METADATA_FILE")
+
+        # Context
+        CMD+=("$INPUT_CONTEXT")
+
+        # Log command without build-arg values (security: values may contain secrets)
+        SAFE_CMD=""
+        SKIP_NEXT=false
+        for part in "${CMD[@]}"; do
+          if [ "$SKIP_NEXT" = true ]; then
+            SAFE_CMD+="\"***\" "
+            SKIP_NEXT=false
+          elif [ "$part" = "--build-arg" ]; then
+            SAFE_CMD+="--build-arg "
+            SKIP_NEXT=true
+          else
+            SAFE_CMD+="$part "
+          fi
+        done
+        if [ "$BUILD_ARG_COUNT" -gt 0 ]; then
+          echo "Running: ${SAFE_CMD}(${BUILD_ARG_COUNT} build-arg(s) masked)"
+        else
+          echo "Running: ${SAFE_CMD}"
+        fi
+
+        "${CMD[@]}"
+
+        # Extract digest
+        DIGEST=""
+        if [ -f "$METADATA_FILE" ]; then
+          DIGEST=$(jq -r '."containerimage.digest" // empty' "$METADATA_FILE" 2>/dev/null || true)
+          rm -f "$METADATA_FILE"
+        fi
+
+        echo "cache-configured=${CACHE_CONFIGURED}" >> "$GITHUB_OUTPUT"
+        echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
