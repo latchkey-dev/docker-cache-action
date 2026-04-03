@@ -144,14 +144,15 @@ runs:
           CMD+=(--load)
         fi
 
-        # ECR cache configuration
+        # ECR cache flags (kept separate for retry-without-cache on failure)
+        ECR_CACHE_ARGS=()
         CACHE_CONFIGURED=false
         if [ -n "${ECR_CACHE_REPO:-}" ]; then
           echo "ECR cache repo detected: ${ECR_CACHE_REPO}"
           CACHE_REF="${ECR_CACHE_REPO}:${INPUT_CACHE_TAG}"
 
-          CMD+=(--cache-from "type=registry,ref=${CACHE_REF}")
-          CMD+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE}")
+          ECR_CACHE_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
+          ECR_CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE}")
           CACHE_CONFIGURED=true
         else
           echo "ECR_CACHE_REPO not set — building without ECR layer cache"
@@ -183,7 +184,7 @@ runs:
         # Log command without build-arg values (security: values may contain secrets)
         SAFE_CMD=""
         SKIP_NEXT=false
-        for part in "${CMD[@]}"; do
+        for part in "${CMD[@]}" "${ECR_CACHE_ARGS[@]}"; do
           if [ "$SKIP_NEXT" = true ]; then
             SAFE_CMD+="\"***\" "
             SKIP_NEXT=false
@@ -200,7 +201,18 @@ runs:
           echo "Running: ${SAFE_CMD}"
         fi
 
-        "${CMD[@]}"
+        # Run build with ECR cache flags; retry without them on failure
+        BUILD_EXIT=0
+        "${CMD[@]}" "${ECR_CACHE_ARGS[@]}" || BUILD_EXIT=$?
+
+        if [ "$BUILD_EXIT" -ne 0 ] && [ "$CACHE_CONFIGURED" = "true" ]; then
+          echo "::warning::Build failed with ECR cache enabled (cache repo may not exist yet) — retrying without ECR cache"
+          # Retry base command without ECR cache args (extra-cache-from/to in CMD are preserved)
+          "${CMD[@]}"
+          CACHE_CONFIGURED=false
+        elif [ "$BUILD_EXIT" -ne 0 ]; then
+          exit "$BUILD_EXIT"
+        fi
 
         # Extract digest
         DIGEST=""
