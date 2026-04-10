@@ -206,7 +206,7 @@ runs:
         "${CMD[@]}" "${ECR_CACHE_ARGS[@]}" || BUILD_EXIT=$?
 
         if [ "$BUILD_EXIT" -ne 0 ] && [ "$CACHE_CONFIGURED" = "true" ]; then
-          echo "::warning::Build failed with ECR cache enabled (cache repo may not exist yet) — retrying without ECR cache"
+          echo "::warning::Build failed (exit ${BUILD_EXIT}) with ECR cache enabled (cache repo may not exist yet) — retrying without ECR cache"
           # Retry base command without ECR cache args (extra-cache-from/to in CMD are preserved)
           "${CMD[@]}"
           CACHE_CONFIGURED=false
