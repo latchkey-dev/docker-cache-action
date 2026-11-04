@@ -8,13 +8,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACTION="$ROOT/action.yml"
 WORK="$(mktemp -d)"
+# The step's own tools, with and without its digest tools, for runners that lack them.
+NOTOOLS=(bash tr sort paste mktemp rm)
+NOSHA_TOOLS=("${NOTOOLS[@]}" shasum)
 cleanup() {
   local tool
   for tool in "${NOSHA_TOOLS[@]}"; do
-    rm -f "$WORK/nosha/$tool"
+    rm -f "$WORK/nosha/$tool" "$WORK/notools/$tool"
   done
   rm -f "$WORK/step.sh" "$WORK/argv" "$WORK/output" "$WORK/log" "$WORK/calls" "$WORK/bin/docker"
-  rmdir "$WORK/nosha" "$WORK/bin" "$WORK" 2>/dev/null || true
+  rmdir "$WORK/nosha" "$WORK/notools" "$WORK/bin" "$WORK" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -104,8 +107,8 @@ tag_for() {
   local from to from_tag to_tag
   from=$(ref_after --cache-from)
   to=$(ref_after --cache-to)
-  from_tag=${from#type=registry,ref=${REPO_URL}:}
-  to_tag=${to#type=registry,ref=${REPO_URL}:}
+  from_tag=${from#type=registry,ref="${REPO_URL}":}
+  to_tag=${to#type=registry,ref="${REPO_URL}":}
   to_tag=${to_tag%%,*}
   if [ -z "$from" ] || [ -z "$to" ] || [ "$from_tag" != "$to_tag" ]; then
     echo "no matching registry cache refs (from='$from' to='$to')" >&2
@@ -163,7 +166,6 @@ expect_same "the order and spacing of a platform list do not change the tag" \
 expect_same "build arguments do not enter the tag" \
   "$(tag_for INPUT_BUILD_ARGS=GIT_SHA=1111111)" "$(tag_for INPUT_BUILD_ARGS=GIT_SHA=2222222)"
 
-NOSHA_TOOLS=(bash tr sort paste shasum mktemp rm)
 if command -v shasum >/dev/null 2>&1; then
   mkdir -p "$WORK/nosha"
   for tool in "${NOSHA_TOOLS[@]}"; do
@@ -173,6 +175,18 @@ if command -v shasum >/dev/null 2>&1; then
     "$(tag_for "PATH=$WORK/bin:$WORK/nosha")" "$default_tag"
 else
   echo "skip - shasum is not installed here"
+fi
+
+mkdir -p "$WORK/notools"
+for tool in "${NOTOOLS[@]}"; do
+  ln -sf "$(command -v "$tool")" "$WORK/notools/$tool"
+done
+notools_tag=$(tag_for "PATH=$WORK/bin:$WORK/notools")
+if [ "$notools_tag" = "cache" ] && grep -q '^::warning::No sha256sum or shasum' "$WORK/log"; then
+  pass "a runner with no digest tool warns and keeps the shared tag rather than an empty digest"
+else
+  fail "a runner with no digest tool warns and keeps the shared tag rather than an empty digest" \
+    "'$notools_tag'"
 fi
 
 run_step 'INPUT_BUILD_ARGS=TOKEN=s3cr3t-value'
@@ -188,7 +202,7 @@ run_step INPUT_CACHE_TAG=cache-api
 if grep -q "ref=${REPO_URL}:cache-api,mode=max" "$WORK/argv"; then
   pass "the cache is written with the cache-mode input"
 else
-  fail "the cache is written with the cache-mode input" "$(cat "$WORK/argv" | tr '\n' ' ')"
+  fail "the cache is written with the cache-mode input" "$(tr '\n' ' ' < "$WORK/argv")"
 fi
 
 run_step ECR_CACHE_REPO=

@@ -123,13 +123,13 @@ runs:
           if [ "${#listed[@]}" -gt 0 ]; then
             platforms=$(printf '%s\n' "${listed[@]}" | LC_ALL=C sort -u | paste -s -d, -)
           fi
-          if command -v sha256sum >/dev/null 2>&1; then
-            digest=$(printf '%s\0' "${GITHUB_REPOSITORY:-}" "${INPUT_CONTEXT}/${INPUT_DOCKERFILE}" \
-              "$INPUT_TARGET" "$platforms" | sha256sum)
-          else
-            digest=$(printf '%s\0' "${GITHUB_REPOSITORY:-}" "${INPUT_CONTEXT}/${INPUT_DOCKERFILE}" \
-              "$INPUT_TARGET" "$platforms" | shasum -a 256)
+          local -a hasher=(sha256sum)
+          if ! command -v sha256sum >/dev/null 2>&1; then
+            hasher=(shasum -a 256)
           fi
+          digest=$(printf '%s\0' "${GITHUB_REPOSITORY:-}" "${INPUT_CONTEXT}/${INPUT_DOCKERFILE}" \
+            "$INPUT_TARGET" "$platforms" | "${hasher[@]}")
+          [[ "$digest" =~ ^[0-9a-f]{16} ]] || return 1
           echo "cache-${digest:0:16}"
         }
 
@@ -178,7 +178,10 @@ runs:
           echo "ECR cache repo detected: ${ECR_CACHE_REPO}"
           CACHE_TAG="$INPUT_CACHE_TAG"
           if [ -z "$CACHE_TAG" ]; then
-            CACHE_TAG=$(derive_cache_tag)
+            if ! CACHE_TAG=$(derive_cache_tag); then
+              echo "::warning::No sha256sum or shasum on this runner to derive this image's cache tag, so the build uses the shared tag cache; set cache-tag to keep this image's cache apart from others"
+              CACHE_TAG=cache
+            fi
           fi
           CACHE_REF="${ECR_CACHE_REPO}:${CACHE_TAG}"
 
