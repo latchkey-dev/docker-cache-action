@@ -1,0 +1,18 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cache-tag:
+    name: Cache tag derivation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the build step against a stub docker
+        run: bash test/cache-tag.test.sh
