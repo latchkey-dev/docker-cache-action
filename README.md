@@ -42,7 +42,7 @@ jobs:
 | `target` | Build target stage | No | |
 | `platforms` | Target platforms (e.g. `linux/amd64,linux/arm64`) | No | |
 | `cache-mode` | BuildKit cache mode (`min` or `max`) | No | `max` |
-| `cache-tag` | ECR image tag used for cache layers | No | `cache` |
+| `cache-tag` | ECR image tag used for cache layers | No | Derived per image |
 | `extra-cache-from` | Additional `--cache-from` arguments (newline separated) | No | |
 | `extra-cache-to` | Additional `--cache-to` arguments (newline separated) | No | |
 
@@ -57,8 +57,21 @@ jobs:
 
 1. Sets up Docker Buildx
 2. Checks for `ECR_CACHE_REPO` in the runner environment
-3. If present, adds `--cache-from=type=registry,ref=$ECR_CACHE_REPO:cache` and `--cache-to=type=registry,ref=$ECR_CACHE_REPO:cache,mode=max`
+3. If present, adds `--cache-from=type=registry,ref=$ECR_CACHE_REPO:<tag>` and `--cache-to=type=registry,ref=$ECR_CACHE_REPO:<tag>,mode=max`, where `<tag>` is your `cache-tag` or the one derived for the image
 4. Runs `docker buildx build` with all configured flags
+
+## One cache per image
+
+A cache tag holds one image's cache, and each build replaces what its tag holds. When you leave
+`cache-tag` unset, the action derives a tag for each image from the repository, the Dockerfile path
+(`context` joined with `dockerfile`), the `target` and the `platforms`, so two images, or two
+repositories in one organization, keep separate caches with no input of yours. Changing any of these
+derives a new tag, and its first build starts with an empty cache.
+
+Build arguments are left out of the derived tag, because their values can be secrets or change on
+every run. Two builds of one Dockerfile that differ only in their build arguments therefore share a
+tag and overwrite each other's cache: give each its own `cache-tag`, such as `cache-api-dev` and
+`cache-api-prod`.
 
 Everything else is handled by the [Latchkey managed runner](https://latchkey.dev/documentation/runners-overview):
 ECR repository creation, IAM credentials, and the ECR credential helper are pre-configured on the

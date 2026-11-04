@@ -54,9 +54,9 @@ inputs:
     required: false
     default: 'max'
   cache-tag:
-    description: 'ECR image tag used for cache layers'
+    description: 'ECR image tag used for cache layers. Defaults to a tag derived for each image from the repository, the Dockerfile path, the target and the platforms'
     required: false
-    default: 'cache'
+    default: ''
   extra-cache-from:
     description: 'Additional --cache-from arguments (newline separated)'
     required: false
@@ -106,6 +106,33 @@ runs:
           echo "$s"
         }
 
+        # The cache repository is shared by every repository in the organization and each build
+        # replaces what its tag holds, so the default tag is one per image. Build args stay out:
+        # their values can be secrets, and one that changes every run (a commit sha) would leave
+        # every run cold. The tag starts with "cache" so the repository's lifecycle cap covers it.
+        derive_cache_tag() {
+          local entry platforms digest
+          local -a listed=()
+          while IFS= read -r entry; do
+            entry=$(trim "$entry")
+            if [ -n "$entry" ]; then
+              listed+=("$entry")
+            fi
+          done <<< "$(echo "$INPUT_PLATFORMS" | tr ',' '\n')"
+          platforms=""
+          if [ "${#listed[@]}" -gt 0 ]; then
+            platforms=$(printf '%s\n' "${listed[@]}" | LC_ALL=C sort -u | paste -s -d, -)
+          fi
+          local -a hasher=(sha256sum)
+          if ! command -v sha256sum >/dev/null 2>&1; then
+            hasher=(shasum -a 256)
+          fi
+          digest=$(printf '%s\0' "${GITHUB_REPOSITORY:-}" "${INPUT_CONTEXT}/${INPUT_DOCKERFILE}" \
+            "$INPUT_TARGET" "$platforms" | "${hasher[@]}")
+          [[ "$digest" =~ ^[0-9a-f]{16} ]] || return 1
+          echo "cache-${digest:0:16}"
+        }
+
         # Build the docker buildx command
         CMD=(docker buildx build)
 
@@ -149,7 +176,14 @@ runs:
         CACHE_CONFIGURED=false
         if [ -n "${ECR_CACHE_REPO:-}" ]; then
           echo "ECR cache repo detected: ${ECR_CACHE_REPO}"
-          CACHE_REF="${ECR_CACHE_REPO}:${INPUT_CACHE_TAG}"
+          CACHE_TAG="$INPUT_CACHE_TAG"
+          if [ -z "$CACHE_TAG" ]; then
+            if ! CACHE_TAG=$(derive_cache_tag); then
+              echo "::warning::No sha256sum or shasum on this runner to derive this image's cache tag, so the build uses the shared tag cache; set cache-tag to keep this image's cache apart from others"
+              CACHE_TAG=cache
+            fi
+          fi
+          CACHE_REF="${ECR_CACHE_REPO}:${CACHE_TAG}"
 
           ECR_CACHE_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
           ECR_CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE}")
