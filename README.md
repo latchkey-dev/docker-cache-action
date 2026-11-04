@@ -42,7 +42,7 @@ jobs:
 | `target` | Build target stage | No | |
 | `platforms` | Target platforms (e.g. `linux/amd64,linux/arm64`) | No | |
 | `cache-mode` | BuildKit cache mode (`min` or `max`) | No | `max` |
-| `cache-tag` | ECR image tag used for cache layers | No | Derived for each image |
+| `cache-tag` | ECR image tag used for cache layers | No | Derived per image |
 | `extra-cache-from` | Additional `--cache-from` arguments (newline separated) | No | |
 | `extra-cache-to` | Additional `--cache-to` arguments (newline separated) | No | |
 
