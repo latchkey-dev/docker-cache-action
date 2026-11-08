@@ -57,7 +57,7 @@ jobs:
 
 1. Sets up Docker Buildx
 2. Checks for `ECR_CACHE_REPO` in the runner environment
-3. If present, adds `--cache-from=type=registry,ref=$ECR_CACHE_REPO:<tag>` and `--cache-to=type=registry,ref=$ECR_CACHE_REPO:<tag>,mode=max`, where `<tag>` is your `cache-tag` or the one derived for the image
+3. If present, adds `--cache-from=type=registry,ref=$ECR_CACHE_REPO:<tag>` and `--cache-to=type=registry,ref=$ECR_CACHE_REPO:<tag>,mode=max,ignore-error=true`, where `<tag>` is your `cache-tag` or the one derived for the image
 4. Runs `docker buildx build` with all configured flags
 
 ## One cache per image
