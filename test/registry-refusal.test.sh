@@ -107,10 +107,11 @@ REGISTRY="127.0.0.1:${PORT}"
 REPO_URL="${REGISTRY}/latchkey-runners/acme/cache"
 REF="${REPO_URL}:cache-refusal"
 
+# Plain HTTP only: with insecure set too, BuildKit tries TLS first and falls back to HTTP only when
+# the answer to its handshake starts with "HTTP/", which this server's does not.
 cat > "$WORK/buildkitd.toml" <<TOML
 [registry."${REGISTRY}"]
   http = true
-  insecure = true
 TOML
 if ! docker buildx create --name "$BUILDER" --driver docker-container --driver-opt network=host \
   --buildkitd-config "$WORK/buildkitd.toml" --bootstrap > "$WORK/log" 2>&1; then
