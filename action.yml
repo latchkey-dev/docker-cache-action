@@ -185,8 +185,11 @@ runs:
           fi
           CACHE_REF="${ECR_CACHE_REPO}:${CACHE_TAG}"
 
+          # A cache export the registry refuses (a job whose credentials may not write the layer
+          # cache, or a cache repository not created yet) must neither fail the build nor start it
+          # again below. BuildKit already reads an import it is refused as a cache miss.
           ECR_CACHE_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
-          ECR_CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE}")
+          ECR_CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=${INPUT_CACHE_MODE},ignore-error=true")
           CACHE_CONFIGURED=true
         else
           echo "ECR_CACHE_REPO not set — building without ECR layer cache"
@@ -240,7 +243,7 @@ runs:
         "${CMD[@]}" "${ECR_CACHE_ARGS[@]}" || BUILD_EXIT=$?
 
         if [ "$BUILD_EXIT" -ne 0 ] && [ "$CACHE_CONFIGURED" = "true" ]; then
-          echo "::warning::Build failed (exit ${BUILD_EXIT}) with ECR cache enabled (cache repo may not exist yet) — retrying without ECR cache"
+          echo "::warning::Build failed (exit ${BUILD_EXIT}) with the layer cache on; building again without it."
           # Retry base command without ECR cache args (extra-cache-from/to in CMD are preserved)
           "${CMD[@]}"
           CACHE_CONFIGURED=false

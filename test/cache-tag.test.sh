@@ -56,14 +56,28 @@ cat > "$WORK/bin/docker" <<'STUB'
 calls=$(( $(cat "$STUB_CALLS" 2>/dev/null || echo 0) + 1 ))
 echo "$calls" > "$STUB_CALLS"
 printf '%s\n' "$@" > "$STUB_ARGV"
+# BuildKit fails the build on a cache export the registry refuses unless the export carries
+# ignore-error=true; test/registry-refusal.test.sh holds the real buildx to that.
+if [ "${STUB_REFUSE_EXPORT:-}" = "true" ]; then
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--cache-to" ] && [[ "$arg" == *"ref=${STUB_REPO}:"* ]]; then
+      echo "ERROR: failed to push ${arg}: unexpected status: 403 Forbidden" >&2
+      [[ ",${arg}," == *",ignore-error=true,"* ]] || exit 1
+    fi
+    prev=$arg
+  done
+fi
 if [ "${STUB_FAIL_FIRST:-}" = "true" ] && [ "$calls" -eq 1 ]; then
-  exit 1
+  exit "${STUB_FAIL_CODE:-1}"
 fi
 exit 0
 STUB
 chmod +x "$WORK/bin/docker"
 
-# run_step NAME=VALUE ... runs the step once with those inputs over the defaults.
+# run_step NAME=VALUE ... runs the step once with those inputs over the defaults, and leaves its
+# exit status in STEP_STATUS.
+STEP_STATUS=0
 run_step() {
   : > "$WORK/argv"
   : > "$WORK/output"
@@ -75,6 +89,7 @@ run_step() {
     "ECR_CACHE_REPO=$REPO_URL"
     "STUB_ARGV=$WORK/argv"
     "STUB_CALLS=$WORK/calls"
+    "STUB_REPO=$REPO_URL"
     "INPUT_CONTEXT=$(input_default context)"
     "INPUT_DOCKERFILE=$(input_default dockerfile)"
     "INPUT_TAGS=app:ci"
@@ -93,6 +108,7 @@ run_step() {
     echo "the step exited $status:" >&2
     cat "$WORK/log" >&2
   fi
+  STEP_STATUS=$status
   return 0
 }
 
@@ -212,12 +228,31 @@ else
   pass "with no cache repository the build runs with no cache flags"
 fi
 
-run_step STUB_FAIL_FIRST=true
-if [ "$(cat "$WORK/calls")" = "2" ] && ! grep -q -- '--cache-from' "$WORK/argv" \
+run_step STUB_REFUSE_EXPORT=true
+if [ "$STEP_STATUS" -eq 0 ] && [ "$(cat "$WORK/calls")" = "1" ] && [ -n "$(ref_after --cache-to)" ] \
+  && ! grep -q '^::warning::Build failed' "$WORK/log" \
+  && grep -q '^cache-configured=true$' "$WORK/output"; then
+  pass "a cache export the registry refuses with 403 leaves the build green and runs it once"
+else
+  fail "a cache export the registry refuses with 403 leaves the build green and runs it once" \
+    "status=$STEP_STATUS calls=$(cat "$WORK/calls")"
+fi
+
+run_step STUB_FAIL_FIRST=true STUB_FAIL_CODE=7
+if [ "$STEP_STATUS" -eq 0 ] && [ "$(cat "$WORK/calls")" = "2" ] \
+  && ! grep -q -- '--cache-from' "$WORK/argv" && ! grep -q -- '--cache-to' "$WORK/argv" \
   && grep -q '^cache-configured=false$' "$WORK/output"; then
   pass "a failed cached build is retried once without the cache"
 else
-  fail "a failed cached build is retried once without the cache" "calls=$(cat "$WORK/calls")"
+  fail "a failed cached build is retried once without the cache" \
+    "status=$STEP_STATUS calls=$(cat "$WORK/calls")"
+fi
+retry_warning='::warning::Build failed (exit 7) with the layer cache on; building again without it.'
+if grep -Fxq "$retry_warning" "$WORK/log" && [ "$(grep -c '^::warning::' "$WORK/log")" = "1" ]; then
+  pass "the retry warning carries the build's exit code and names no cause"
+else
+  fail "the retry warning carries the build's exit code and names no cause" \
+    "$(grep '^::warning::' "$WORK/log" || echo 'no warning')"
 fi
 
 echo "# $PASSED passed, $FAILED failed"
